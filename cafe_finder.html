@@ -1,0 +1,182 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Cafe Finder — Demo</title>
+  <style>
+    body { margin:0; font-family: Arial, Helvetica, sans-serif; }
+    #map { height: 80vh; width: 100%; }
+    #controls { padding: 12px; display:flex; gap:8px; align-items:center; }
+    input[type="text"] { padding:8px; width:280px; }
+    label{font-size:14px}
+    .btn{ padding:8px 12px; cursor:pointer; border:1px solid #ccc; background:#fff; border-radius:6px }
+    #list { max-height:20vh; overflow:auto; padding:8px; border-top:1px solid #eee }
+    .place { padding:6px 0; border-bottom:1px dashed #f0f0f0 }
+  </style>
+</head>
+<body>
+  <div id="controls">
+    <button id="locateBtn" class="btn">Use my location</button>
+    <input id="searchInput" type="text" placeholder="Search city or place (optional)" />
+    <label>Radius: <span id="radiusLabel">1000</span>m</label>
+    <input id="radius" type="range" min="200" max="5000" step="100" value="1000">
+    <button id="searchBtn" class="btn">Find Cafes</button>
+  </div>
+  <div id="map"></div>
+  <div id="list"></div>
+
+  <!-- MarkerClusterer (client) -->
+  <script src="https://unpkg.com/@googlemaps/markerclusterer/dist/index.min.js"></script>
+
+  <!-- Main script -->
+  <script>
+    // ---- CONFIG: put your API key in the script tag that loads the Maps JS API below ----
+
+    let map, service, infoWindow;
+    let markers = [];
+    let markerCluster = null;
+    let currentLocation = { lat: 28.6139, lng: 77.2090 }; // default to New Delhi
+
+    function initMap() {
+      map = new google.maps.Map(document.getElementById('map'), {
+        center: currentLocation,
+        zoom: 14,
+        mapId: undefined
+      });
+
+      infoWindow = new google.maps.InfoWindow();
+      service = new google.maps.places.PlacesService(map);
+
+      document.getElementById('locateBtn').addEventListener('click', useMyLocation);
+      document.getElementById('searchBtn').addEventListener('click', doSearch);
+      document.getElementById('radius').addEventListener('input', (e)=>{
+        document.getElementById('radiusLabel').textContent = e.target.value;
+      });
+
+      // Optional: allow typing a city name and press Enter to geocode (simple)
+      document.getElementById('searchInput').addEventListener('keydown', (e)=>{
+        if (e.key === 'Enter') { geocodeAndSearch(); }
+      });
+
+      // initial search
+      doSearch();
+    }
+
+    // Use browser geolocation
+    function useMyLocation(){
+      if (!navigator.geolocation) {
+        alert('Geolocation not supported by your browser.');
+        return;
+      }
+      navigator.geolocation.getCurrentPosition((pos)=>{
+        currentLocation = { lat: pos.coords.latitude, lng: pos.coords.longitude };
+        map.setCenter(currentLocation);
+        map.setZoom(15);
+        doSearch();
+      }, (err)=>{
+        alert('Could not get location: ' + (err.message||err.code));
+      }, { enableHighAccuracy:true, timeout:10000 });
+    }
+
+    // If user types a place (city/address), geocode with the Maps Geocoder then search from that point
+    function geocodeAndSearch(){
+      const q = document.getElementById('searchInput').value.trim();
+      if (!q) { doSearch(); return; }
+      const geocoder = new google.maps.Geocoder();
+      geocoder.geocode({ address: q }, (results, status)=>{
+        if (status === 'OK' && results[0]){
+          const loc = results[0].geometry.location;
+          currentLocation = { lat: loc.lat(), lng: loc.lng() };
+          map.setCenter(currentLocation);
+          map.setZoom(13);
+          doSearch();
+        } else {
+          alert('Geocode failed: ' + status);
+        }
+      });
+    }
+
+    function clearMarkers(){
+      markers.forEach(m=>m.setMap(null));
+      markers = [];
+      if (markerCluster) { markerCluster.clearMarkers(); }
+    }
+
+    function doSearch(){
+      clearMarkers();
+      const radius = Number(document.getElementById('radius').value) || 1000;
+      const request = {
+        location: currentLocation,
+        radius: radius,
+        type: ['cafe']
+      };
+
+      // PlacesService.nearbySearch uses the Places library included with the Maps JS API
+      service.nearbySearch(request, (results, status, pagination) => {
+        if (status !== google.maps.places.PlacesServiceStatus.OK || !results) {
+          document.getElementById('list').innerHTML = '<i>No cafes found — try changing radius or location.</i>';
+          return;
+        }
+        renderPlaces(results);
+
+        // handle pagination (if many results)
+        if (pagination && pagination.hasNextPage) {
+          // auto-fetch next page after a short pause
+          setTimeout(()=>{ pagination.nextPage(); }, 1000);
+        }
+      });
+    }
+
+    function renderPlaces(places){
+      const list = document.getElementById('list');
+      list.innerHTML = '';
+
+      places.forEach((place, i)=>{
+        const marker = new google.maps.marker.AdvancedMarkerElement({
+          map,
+          position: place.geometry.location,
+          title: place.name
+        });
+
+        marker.addListener('click', ()=>{
+          // request place details for fuller info
+          service.getDetails({ placeId: place.place_id }, (details, status)=>{
+            if (status === google.maps.places.PlacesServiceStatus.OK && details){
+              const content = `<div><strong>${escapeHtml(details.name)}</strong><br>${details.formatted_address||''}<br>Rating: ${details.rating||'N/A'}<br><a href='https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(details.name)}&query_place_id=${details.place_id}' target='_blank'>Open in Google Maps</a></div>`;
+              infoWindow.setContent(content);
+              infoWindow.open({ anchor: marker, map });
+            } else {
+              infoWindow.setContent(`<div><strong>${escapeHtml(place.name)}</strong></div>`);
+              infoWindow.open({ anchor: marker, map });
+            }
+          });
+        });
+
+        markers.push(marker);
+
+        // add to list
+        const div = document.createElement('div');
+        div.className = 'place';
+        div.innerHTML = `<strong>${escapeHtml(place.name)}</strong><br>${place.vicinity || ''} <br>Rating: ${place.rating || 'N/A'}`;
+        div.addEventListener('click', ()=>{ map.panTo(place.geometry.location); map.setZoom(16); google.maps.event.trigger(marker, 'click'); });
+        list.appendChild(div);
+      });
+
+      // cluster markers for clarity
+      if (markerCluster) markerCluster.clearMarkers();
+      markerCluster = new markerClusterer.MarkerClusterer({ map, markers });
+    }
+
+    // small utility
+    function escapeHtml(text){ return String(text).replace(/[&<>"']/g, c=>({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' })[c]); }
+
+    // Expose initMap to global for Google Maps callback
+    window.initMap = initMap;
+  </script>
+
+  <!-- Load Maps JS API: replace YOUR_API_KEY with your key. Libraries=places required. -->
+  <script async
+    src="https://maps.googleapis.com/maps/api/js?key=YOUR_API_KEY&libraries=places&callback=initMap"></script>
+</body>
+</html>
